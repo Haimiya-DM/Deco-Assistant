@@ -1,15 +1,19 @@
 #include <Geode/Geode.hpp>
 #include <Geode/utils/web.hpp>
+#include <Geode/utils/file.hpp>
 #include <Geode/ui/Popup.hpp>
 #include <Geode/binding/LevelEditorLayer.hpp>
 #include <Geode/binding/EditorUI.hpp>
 #include <Geode/binding/GameObject.hpp>
 #include <Geode/binding/LevelSettingsObject.hpp>
 #include <cocos2d.h>
+#include <matjson.hpp>
+#include <fmt/format.h>
 #include <fstream>
 #include <sstream>
 #include <ctime>
 #include <unordered_map>
+#include <algorithm>
 
 using namespace geode::prelude;
 using namespace cocos2d;
@@ -52,15 +56,14 @@ static Snap captureEditor() {
     rt->end();
     auto* img = rt->newCCImage(false);
     if (!img) return {};
-    const char* path = "/tmp/gd_ai_snap.png";
-    bool saved = img->saveToFile(path, false);
+    auto path = Mod::get()->getSaveDir() / "gd_ai_snap.png";
+    bool saved = img->saveToFile(path.string().c_str(), false);
     CC_SAFE_RELEASE(img);
     if (!saved) return {};
-    unsigned long sz2 = 0;
-    auto* raw = CCFileUtils::sharedFileUtils()->getFileData(path, "rb", &sz2);
-    if (!raw || !sz2) return {};
-    Snap s; s.b64 = b64Encode(raw, sz2); s.ok = !s.b64.empty();
-    free(raw);
+    auto raw = file::readBinary(path);
+    if (!raw) return {};
+    auto data = raw.unwrap();
+    Snap s; s.b64 = b64Encode(data.data(), data.size()); s.ok = !s.b64.empty();
     return s;
 }
 
@@ -525,7 +528,9 @@ protected:
     // ═════════════════════════════════════════════════════════════
 
     void onUseSelection(CCObject*) {
-        auto* edUI = EditorUI::get();
+        auto* lel = LevelEditorLayer::get();
+        if (!lel) { setStatus("Open editor first!", {255,80,80}); return; }
+        auto* edUI = lel->m_editorUI;
         if (!edUI) { setStatus("Open editor first!", {255,80,80}); return; }
 
         float minX = 1e9f, maxX = -1e9f;
@@ -674,42 +679,42 @@ protected:
             "\n\nDecoration request: " + m_currentPrompt;
 
         // Build multimodal content
-        auto imgSrc = matjson::Value::object();
+        auto imgSrc = matjson::Object();
         imgSrc["type"]       = "base64";
         imgSrc["media_type"] = "image/png";
         imgSrc["data"]       = imgB64;
-        auto imgPart = matjson::Value::object();
+        auto imgPart = matjson::Object();
         imgPart["inline_data"] = imgSrc;
 
-        auto txtPart = matjson::Value::object();
+        auto txtPart = matjson::Object();
         txtPart["text"] = fullText;
 
-        auto parts = matjson::Value::array();
+        auto parts = matjson::Array();
         parts.push_back(imgPart);
         parts.push_back(txtPart);
 
-        auto content = matjson::Value::object();
+        auto content = matjson::Object();
         content["parts"] = parts;
         content["role"]  = "user";
 
-        auto contents = matjson::Value::array();
+        auto contents = matjson::Array();
         contents.push_back(content);
 
-        auto genCfg = matjson::Value::object();
+        auto genCfg = matjson::Object();
         genCfg["temperature"]     = 0.75;
         genCfg["maxOutputTokens"] = 8192;
 
-        auto body = matjson::Value::object();
+        auto body = matjson::Object();
         body["contents"]         = contents;
         body["generationConfig"] = genCfg;
 
         auto req = web::WebRequest();
         req.header("Content-Type", "application/json");
-        req.bodyString(body.dump());
+        req.bodyString(matjson::Value(body).dump());
 
-        m_listener.bind([this, pass](Task<web::WebResponse, web::WebProgress>::Event* e) {
+        m_listener.listen([this, pass](Task<web::WebResponse, web::WebProgress>::Event* e) {
             if (auto* res = e->getValue()) {
-                std::string raw  = res->string().unwrapOr("");
+                std::string raw  = res->string().unwrap_or("");
                 int         code = res->code();
                 Loader::get()->queueInMainThread([this, pass, raw, code]() {
                     handlePassResponse(pass, raw, code);
@@ -733,7 +738,7 @@ protected:
         }
 
         auto wrapper = matjson::parse(raw);
-        if (!wrapper.has_value()) {
+        if (wrapper.is_error()) {
             setStatus("Parse error on response.", {255,80,80});
             m_busy = false;
             return;
@@ -741,8 +746,8 @@ protected:
 
         std::string jsonText;
         try {
-            jsonText = wrapper.value()["candidates"][0]["content"]["parts"][0]["text"]
-                           .as_string().unwrapOr("");
+            jsonText = wrapper.unwrap()["candidates"][0]["content"]["parts"][0]["text"]
+                           .asString().unwrap_or("");
         } catch (...) {
             setStatus("Unexpected Gemini response format.", {255,80,80});
             m_busy = false;
@@ -761,14 +766,14 @@ protected:
         jsonText = jsonText.substr(start, end - start + 1);
 
         auto deco = matjson::parse(jsonText);
-        if (!deco.has_value()) {
+        if (deco.is_error()) {
             pushChat("AI: JSON error, skipping this pass.", {255,150,80});
             proceedAfterPass(pass);
             return;
         }
 
         // ── Confidence check ──────────────────────────────────────
-        int confidence = deco.value()["confidence"].as_int().unwrapOr(100);
+        int confidence = deco.unwrap()["confidence"].asInt().unwrap_or(100);
         if (confidence < CONFIDENCE_WARN) {
             pushChat(fmt::format(
                 "AI: Low confidence ({}%) — layout not fully visible. "
@@ -778,12 +783,12 @@ protected:
         }
 
         // ── Show analysis ─────────────────────────────────────────
-        auto analysis = deco.value()["analysis"].as_string().unwrapOr("");
+        auto analysis = deco.unwrap()["analysis"].asString().unwrap_or("");
         if (!analysis.empty())
             pushChat(fmt::format("[P{}] {}", pass+1, analysis), {150,255,200});
 
         // ── Place objects ─────────────────────────────────────────
-        int placed = applyPassObjects(deco.value(), pass);
+        int placed = applyPassObjects(deco.unwrap(), pass);
         pushChat(fmt::format("AI: Pass {}/3 done — {} objects.", pass+1, placed),
                  {100,255,180});
 
@@ -829,7 +834,9 @@ protected:
                          total), {100,255,180});
             }
 
-            if (auto* edUI = EditorUI::get()) edUI->deselectAll();
+            if (auto* lel = LevelEditorLayer::get()) {
+                if (auto* edUI = lel->m_editorUI) edUI->deselectAll();
+            }
         }
     }
 
@@ -846,16 +853,16 @@ protected:
 
         // ── Deco objects ──────────────────────────────────────────
         if (data.contains("objects")) {
-            auto arr = data["objects"].as_array();
-            if (arr.has_value()) {
-                for (auto& obj : arr.value()) {
-                    int   id   = obj["id"].as_int().unwrapOr(211);
-                    float x    = (float)obj["x"].as_double().unwrapOr(150.0);
-                    float y    = (float)obj["y"].as_double().unwrapOr(105.0);
-                    float sc   = (float)obj["scale"].as_double().unwrapOr(1.0);
-                    float rot  = (float)obj["rotation"].as_double().unwrapOr(0.0);
-                    bool  flpX = obj["flip_x"].as_bool().unwrapOr(false);
-                    int   zl   = obj["z_layer"].as_int().unwrapOr(-3);
+            auto arr = data["objects"].asArray();
+            if (arr.is_ok()) {
+                for (auto& obj : arr.unwrap()) {
+                    int   id   = obj["id"].asInt().unwrap_or(211);
+                    float x    = (float)obj["x"].asDouble().unwrap_or(150.0);
+                    float y    = (float)obj["y"].asDouble().unwrap_or(105.0);
+                    float sc   = (float)obj["scale"].asDouble().unwrap_or(1.0);
+                    float rot  = (float)obj["rotation"].asDouble().unwrap_or(0.0);
+                    bool  flpX = obj["flip_x"].asBool().unwrap_or(false);
+                    int   zl   = obj["z_layer"].asInt().unwrap_or(-3);
 
                     // Clamp values
                     id  = std::clamp(id,  1,    3000);
@@ -885,11 +892,11 @@ protected:
 
         // ── Triggers (pass 2 only) ────────────────────────────────
         if (pass == 2 && data.contains("triggers")) {
-            auto arr = data["triggers"].as_array();
-            if (arr.has_value()) {
-                for (auto& trig : arr.value()) {
-                    std::string type = trig["type"].as_string().unwrapOr("color");
-                    float x = (float)trig["x"].as_double().unwrapOr(311.0);
+            auto arr = data["triggers"].asArray();
+            if (arr.is_ok()) {
+                for (auto& trig : arr.unwrap()) {
+                    std::string type = trig["type"].asString().unwrap_or("color");
+                    float x = (float)trig["x"].asDouble().unwrap_or(311.0);
 
                     // Snap to beat grid
                     if (beatLen > 0.f)
