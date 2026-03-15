@@ -218,7 +218,7 @@ struct ChatEntry {
 //  AI DECO POPUP
 // ═══════════════════════════════════════════════════════════════════
 
-class AIDecoPopup : public Popup<> {
+class AIDecoPopup : public geode::Popup<> {
 
     // ── UI nodes ─────────────────────────────────────────────────
     CCTextInputNode* m_promptInput   = nullptr;
@@ -249,7 +249,7 @@ class AIDecoPopup : public Popup<> {
     std::vector<ChatEntry> m_chatHistory;
 
     // ── Network ──────────────────────────────────────────────────
-    EventListener<web::WebTask> m_listener;
+    EventListener<Task<web::WebResponse, web::WebProgress>> m_listener;
 
     // ── Dimensions ───────────────────────────────────────────────
     static constexpr float PW     = 460.f;
@@ -257,8 +257,7 @@ class AIDecoPopup : public Popup<> {
     static constexpr float CHAT_H = 190.f;
 
 protected:
-    bool init() override {
-        if (!Popup::init(PW, PH)) return false;
+    bool setup() override {
         buildUI();
         return true;
     }
@@ -272,14 +271,14 @@ protected:
         auto* title = CCLabelBMFont::create("AI Deco Assistant", "goldFont.fnt");
         title->setScale(0.65f);
         title->setPosition({PW/2.f, PH - 18.f});
-        m_mainLayer->addChild(title);
+        this->addChild(title);
 
         auto* sub = CCLabelBMFont::create(
             "Gemini 2.0 Flash  |  3-Pass Vision  |  by D.M", "chatFont.fnt");
         sub->setScale(0.30f);
         sub->setColor({130, 100, 255});
         sub->setPosition({PW/2.f, PH - 34.f});
-        m_mainLayer->addChild(sub);
+        this->addChild(sub);
 
         // Chat BG
         auto* chatBG = CCScale9Sprite::create("square02_001.png");
@@ -287,7 +286,7 @@ protected:
         chatBG->setPosition({PW/2.f, CHAT_H/2.f + 130.f});
         chatBG->setOpacity(55);
         chatBG->setColor({6, 0, 22});
-        m_mainLayer->addChild(chatBG);
+        this->addChild(chatBG);
 
         // Clipping node for chat scroll
         auto* clip = CCClippingNode::create();
@@ -297,7 +296,7 @@ protected:
         auto* stencil = CCLayerColor::create({255,255,255,255});
         stencil->setContentSize({PW - 22.f, CHAT_H - 4.f});
         clip->setStencil(stencil);
-        m_mainLayer->addChild(clip, 5);
+        this->addChild(clip, 5);
 
         m_chatLayer = CCLayer::create();
         m_chatLayer->setPosition({8.f, CHAT_H - 8.f});
@@ -306,7 +305,7 @@ protected:
         // ── Preset buttons ──────────────────────────────────────
         auto* presetMenu = CCMenu::create();
         presetMenu->setPosition({0.f, 0.f});
-        m_mainLayer->addChild(presetMenu, 10);
+        this->addChild(presetMenu, 10);
 
         float gap = (PW - 32.f) / (float)PRESETS.size();
         for (int i = 0; i < (int)PRESETS.size(); i++) {
@@ -339,7 +338,7 @@ protected:
         // Use selection button
         auto* selMenu = CCMenu::create();
         selMenu->setPosition({0.f, 0.f});
-        m_mainLayer->addChild(selMenu, 10);
+        this->addChild(selMenu, 10);
 
         auto* selSpr = ButtonSprite::create("SEL", "bigFont.fnt", "GJ_button_05.png", 0.5f);
         selSpr->setScale(0.60f);
@@ -354,17 +353,17 @@ protected:
         inputBG->setPosition({(PW-120.f)/2.f + 5.f, 76.f});
         inputBG->setOpacity(130);
         inputBG->setColor({18, 8, 45});
-        m_mainLayer->addChild(inputBG, 5);
+        this->addChild(inputBG, 5);
 
         m_promptInput = CCTextInputNode::create(
             PW - 130.f, 30.f, "Describe your deco vibe...", "chatFont.fnt");
         m_promptInput->setPosition({(PW-120.f)/2.f + 5.f, 76.f});
-        m_mainLayer->addChild(m_promptInput, 6);
+        this->addChild(m_promptInput, 6);
 
         // ── Action buttons ───────────────────────────────────────
         m_actionMenu = CCMenu::create();
         m_actionMenu->setPosition({0.f, 0.f});
-        m_mainLayer->addChild(m_actionMenu, 10);
+        this->addChild(m_actionMenu, 10);
         buildActionButtons(false);
 
         // Status bar
@@ -373,7 +372,7 @@ protected:
         m_statusLabel->setScale(0.32f);
         m_statusLabel->setColor({160,160,255});
         m_statusLabel->setPosition({PW/2.f - 30.f, 14.f});
-        m_mainLayer->addChild(m_statusLabel, 5);
+        this->addChild(m_statusLabel, 5);
 
         // Initial messages
         pushChat("AI: Ready! I will screenshot your layout before each pass.", {120,220,255});
@@ -387,7 +386,7 @@ protected:
         auto* lbl = CCLabelBMFont::create(txt, "chatFont.fnt");
         lbl->setScale(0.37f);
         lbl->setPosition({x, y});
-        m_mainLayer->addChild(lbl, 5);
+        this->addChild(lbl, 5);
     }
 
     void addInputBG(float x, float y, float w) {
@@ -396,14 +395,14 @@ protected:
         bg->setPosition({x, y});
         bg->setOpacity(120);
         bg->setColor({20, 10, 50});
-        m_mainLayer->addChild(bg, 5);
+        this->addChild(bg, 5);
     }
 
     CCTextInputNode* makeInput(float w, float h, const char* ph,
                                float x, float y) {
         auto* inp = CCTextInputNode::create(w, h, ph, "chatFont.fnt");
         inp->setPosition({x, y});
-        m_mainLayer->addChild(inp, 6);
+        this->addChild(inp, 6);
         return inp;
     }
 
@@ -699,7 +698,7 @@ protected:
         req.header("Content-Type", "application/json");
         req.bodyString(body.dump());
 
-        m_listener.bind([this, pass](web::WebTask::Event* e) {
+        m_listener.bind([this, pass](Task<web::WebResponse, web::WebProgress>::Event* e) {
             if (auto* res = e->getValue()) {
                 std::string raw  = res->string().unwrapOr("");
                 int         code = res->code();
@@ -985,7 +984,7 @@ protected:
 public:
     static AIDecoPopup* create() {
         auto* ret = new AIDecoPopup();
-        if (ret && ret->init()) { ret->autorelease(); return ret; }
+        if (ret && ret->initAnchored(PW, PH)) { ret->autorelease(); return ret; }
         CC_SAFE_DELETE(ret);
         return nullptr;
     }
